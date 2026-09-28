@@ -1,0 +1,773 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+
+<!-- =====================================================================
+     TRANSLATORS: every user-facing string in this app lives in the
+     object below. Edit the VALUES (the text after each colon), not the
+     keys. Functions receive whatever pieces they need and can reorder
+     or rephrase freely — handy since word order differs between
+     languages. Nothing else in this file needs to change.
+     ===================================================================== -->
+<script>
+  var STRINGS = {
+    appTitle: "Segment Timer",
+    minutesUnit: "min",
+    minutesLabel: function(paddedMinutes){ return paddedMinutes + " " + STRINGS.minutesUnit; },
+    newTimerCaption: "Set a new timer",
+    namePrompt: function(minutesLabel){ return "Set a <strong>" + minutesLabel + "</strong> timer, for:"; },
+    namePlaceholder: "Name",
+    defaultTimerName: function(n){ return "Timer " + n; },
+    cancel: "Cancel",
+    confirm: "Confirm",
+    clear: "Clear",
+    backToList: "Back to list",
+    markDone: function(name){ return "Mark " + name + " as done"; },
+    addTimeTo: function(name){ return "Add time to " + name; },
+    emptyList: "No timers yet — set one on the left."
+  };
+</script>
+
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Segment Timer</title>
+<style>
+  /* ===================================================================
+     FONTS: self-hosted. Put Inter.ttf and SpaceGrotesk.ttf (variable
+     fonts) in the same folder as this file. If they're missing, the
+     system font stack below is used instead.
+     ===================================================================*/
+  @font-face{
+    font-family:'Inter';
+    src:url('Inter.ttf') format('truetype');
+    font-weight:100 900;
+    font-display:swap;
+  }
+  @font-face{
+    font-family:'Space Grotesk';
+    src:url('SpaceGrotesk.ttf') format('truetype');
+    font-weight:300 700;
+    font-display:swap;
+  }
+
+  /* ===================================================================
+     THEME: change these few variables to re-skin the whole app.
+       --ink     page and panel background (dark)
+       --paper   text, and the fill of neutral buttons (light)
+       --accent  "go" actions: confirm and add-time (used sparingly)
+       --alert   anything that's over time
+     ===================================================================*/
+  :root{
+    --ink:#111214;
+    --paper:#f4f4f5;
+    --accent:#4fd1c5;
+    --panel: rgba(255,255,255,0.05);
+    --card: rgba(255,255,255,0.08);
+    --card-hover: rgba(255,255,255,0.13);
+    --card-alert-hover: rgba(255,91,69,0.16);
+    --divider: rgba(255,255,255,0.16);
+    --muted: rgba(255,255,255,0.62);
+    --alert:#ff5b45;
+    --alert-tint: rgba(255,91,69,0.1);
+    --focus-ring:#4fd1c5;
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;}
+  body{
+    margin:0;
+    font-family:'Inter',system-ui,sans-serif;
+    background:var(--ink);
+    color:var(--paper);
+    -webkit-font-smoothing:antialiased;
+  }
+  button{font-family:inherit;}
+  button:focus-visible, input:focus-visible, [tabindex]:focus-visible{
+    outline:3px solid var(--focus-ring);
+    outline-offset:2px;
+  }
+  .num{font-family:'Space Grotesk',system-ui,sans-serif; font-variant-numeric: tabular-nums; font-feature-settings:"tnum";}
+
+  /* ---------- App shell ---------- */
+  .app{
+    display:flex;
+    min-height:100vh;
+    width:100%;
+  }
+  @media (max-width: 720px){
+    .app{flex-direction:column;}
+  }
+
+  /* ---------- Header ---------- */
+  .app-title{
+    position:absolute;
+    top:20px; left:20px;
+    font-family:'Space Grotesk',system-ui,sans-serif;
+    font-weight:600;
+    font-size:0.95rem;
+    letter-spacing:0.01em;
+    color:var(--paper);
+  }
+
+  /* ---------- Left entry panel ---------- */
+  .entry{
+    width:320px;
+    flex-shrink:0;
+    background:var(--panel);
+    padding:88px 28px 28px;
+    display:flex;
+    flex-direction:column;
+    gap:22px;
+    border-right:1px solid var(--divider);
+  }
+  @media (max-width: 720px){
+    .entry{width:100%; border-right:none; border-bottom:1px solid var(--divider); padding:88px 24px 24px;}
+  }
+
+  .entry-display{
+    text-align:center;
+  }
+  .entry-display .big{
+    font-size:clamp(1.8rem, 5vw, 2.4rem);
+    font-weight:600;
+    line-height:1.1;
+  }
+  .entry-display .caption{
+    font-size:1.15rem;
+    font-weight:700;
+    color:var(--paper);
+    margin-bottom:10px;
+  }
+  .entry-name-prompt{
+    text-align:center;
+    font-size:1.05rem;
+    line-height:1.4;
+  }
+  .entry-name-prompt strong{font-weight:700;}
+  .name-input{
+    width:100%;
+    padding:12px 14px;
+    border-radius:10px;
+    border:1px solid var(--divider);
+    background:var(--paper);
+    font-size:1rem;
+    color:var(--ink);
+  }
+
+  .keypad{
+    display:grid;
+    grid-template-columns:repeat(3, 1fr);
+    gap:12px;
+  }
+  .key{
+    aspect-ratio:1;
+    border-radius:50%;
+    border:none;
+    background:var(--paper);
+    color:var(--ink);
+    font-size:1.3rem;
+    font-weight:600;
+    cursor:pointer;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    transition:transform .08s ease, filter .15s ease;
+  }
+  .key:hover{filter:brightness(0.94);}
+  .key:active{transform:scale(0.94);}
+  .key.ghost{
+    background:transparent;
+    border:1px solid var(--muted);
+    color:var(--muted);
+  }
+  .key.ghost:hover{background:rgba(255,255,255,0.08);}
+  .key.confirm{color:var(--ink); background:var(--accent); border:none;}
+  .key.confirm:hover{filter:brightness(0.93);}
+  .key:disabled{opacity:0.4; cursor:default;}
+
+  .entry-actions{
+    display:flex;
+    justify-content:space-between;
+    gap:12px;
+    margin-top:4px;
+  }
+  .pill-btn{
+    flex:1;
+    padding:12px;
+    border-radius:999px;
+    border:1px solid var(--divider);
+    background:var(--paper);
+    color:var(--ink);
+    cursor:pointer;
+    font-weight:500;
+  }
+  .pill-btn.primary{background:var(--accent); color:var(--ink); border-color:var(--accent);}
+
+  /* ---------- Right list panel ---------- */
+  .list-panel{
+    flex:1;
+    padding:88px 28px 40px;
+    display:grid;
+    grid-template-columns:repeat(auto-fill, minmax(280px, 1fr));
+    align-content:start;
+    gap:14px;
+  }
+  @media (max-width: 720px){
+    .list-panel{padding:32px 20px 40px; grid-template-columns:1fr;}
+  }
+  .list-empty{
+    color:var(--muted);
+    font-size:0.98rem;
+    padding:24px 4px;
+    grid-column:1/-1;
+  }
+
+  .timer-card{
+    display:flex;
+    align-items:center;
+    gap:16px;
+    background:var(--card);
+    border-radius:16px;
+    padding:16px 18px;
+    cursor:pointer;
+    transition:background .15s ease;
+    border-left:6px solid transparent;
+  }
+  .timer-card:hover{background:var(--card-hover);}
+  .timer-card.overtime{
+    background:var(--alert-tint);
+    border-left-color:var(--alert);
+  }
+  .timer-card.overtime:hover{background:var(--card-alert-hover);}
+  .timer-card .info{flex:1; min-width:0;}
+  .timer-card .time{
+    font-size:clamp(1.6rem, 4vw, 2.1rem);
+    font-weight:700;
+    line-height:1.05;
+  }
+  .timer-card.overtime .time{color:var(--alert);}
+  .timer-card .name{
+    font-size:0.95rem;
+    font-weight:500;
+    color:var(--muted);
+    margin-top:2px;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+  }
+  .icon-btn{
+    width:44px; height:44px;
+    border-radius:50%;
+    border:none;
+    flex-shrink:0;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    cursor:pointer;
+    font-size:1.1rem;
+    transition:transform .08s ease, filter .15s ease;
+  }
+  .icon-btn svg{display:block;}
+  .icon-btn:active{transform:scale(0.92);}
+  .icon-btn.check{background:var(--paper); color:var(--ink);}
+  .icon-btn.check:hover{filter:brightness(0.93);}
+  .icon-btn.plus{background:var(--accent); color:var(--ink);}
+  .icon-btn.plus:hover{filter:brightness(0.93);}
+
+  /* ---------- Focus overlay ---------- */
+  .focus-overlay{
+    position:fixed;
+    inset:0;
+    background:var(--ink);
+    z-index:50;
+    display:flex;
+  }
+  .focus-overlay[hidden]{display:none;}
+  .focus-panes{
+    display:flex;
+    width:100%;
+    height:100%;
+    overflow-x:auto;
+    scroll-snap-type:x proximity;
+  }
+  .focus-pane{
+    flex:1 1 0;
+    min-width:190px;
+    scroll-snap-align:start;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    justify-content:center;
+    gap:18px;
+    position:relative;
+    padding:40px 16px;
+    container-type:inline-size;
+  }
+  .focus-pane + .focus-pane{border-left:1px solid var(--divider);}
+  .focus-time{
+    font-size:clamp(1.8rem, 16cqi, 6rem);
+    font-weight:700;
+    line-height:1;
+    white-space:nowrap;
+  }
+  .focus-pane.overtime .focus-time{color:var(--alert);}
+  .focus-name{
+    font-size:clamp(0.85rem, 5cqi, 1.2rem);
+    font-weight:500;
+    color:var(--muted);
+    text-align:center;
+  }
+  .focus-actions{display:flex; gap:clamp(10px, 6cqi, 20px); margin-top:8px;}
+  .focus-actions .icon-btn{
+    width:clamp(38px, 16cqi, 60px);
+    height:clamp(38px, 16cqi, 60px);
+    font-size:clamp(0.9rem, 6cqi, 1.4rem);
+  }
+
+  .back-btn{
+    position:absolute;
+    top:20px; left:20px;
+    width:46px; height:46px;
+    border-radius:50%;
+    border:none;
+    background:var(--paper);
+    color:var(--ink);
+    font-size:1.2rem;
+    cursor:pointer;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    z-index:2;
+  }
+</style>
+</head>
+<body>
+
+<div class="app-title" id="appTitle"></div>
+
+<div class="app">
+  <!-- LEFT ENTRY PANEL -->
+  <div class="entry" id="entryPanel"></div>
+
+  <!-- RIGHT LIST PANEL -->
+  <div class="list-panel" id="listPanel"></div>
+</div>
+
+<!-- FOCUS OVERLAY -->
+<div class="focus-overlay" id="focusOverlay" hidden>
+  <button class="back-btn" id="focusBack">&#8592;</button>
+  <div id="focusPanes" class="focus-panes"></div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  var STORAGE_KEY = "segment-timers-v1";
+
+  // Drawn as SVG on purpose: the "+" emoji character renders as a coloured
+  // emoji on some platforms (purple on Windows) instead of taking the button's colour.
+  var PLUS_ICON = '<svg width="1em" height="1em" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" fill="none"/></svg>';
+
+  var state = {
+    // Each timer stores endsAt (an absolute epoch-ms deadline) instead of a
+    // counting-down number, so "time left" is always Date.now() away from
+    // correct — recomputed fresh on every render, survives refreshes, tab
+    // throttling in the background, and the whole browser being closed and
+    // reopened later. `alerted` remembers whether this run already fired
+    // the auto-fullscreen + alarm, so it only fires once per run.
+    timers: [],           // {id, name, endsAt, alerted}
+    entryMode: "minutes", // 'minutes' | 'name' | 'addtime'
+    entryDigits: "",
+    pendingMinutes: 0,
+    addTimeTargetId: null,
+    focusedIds: []
+  };
+
+  function getRemaining(t){
+    return Math.round((t.endsAt - Date.now()) / 1000);
+  }
+
+  function loadState(){
+    try{
+      var raw = localStorage.getItem(STORAGE_KEY);
+      if(!raw) return;
+      var parsed = JSON.parse(raw);
+      if(!Array.isArray(parsed)) return;
+      state.timers = parsed.map(function(t){
+        if(typeof t.endsAt === 'number'){
+          return { id: t.id, name: t.name, endsAt: t.endsAt, alerted: !!t.alerted };
+        }
+        // Migrate a timer saved by an older version of this app, which
+        // stored a plain countdown ("remaining") instead of a deadline.
+        var legacyRemaining = typeof t.remaining === 'number' ? t.remaining : 0;
+        return { id: t.id || uid(), name: t.name || '', endsAt: Date.now() + legacyRemaining*1000, alerted: false };
+      });
+    }catch(e){ /* ignore corrupt storage */ }
+  }
+  function saveState(){
+    try{
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state.timers));
+    }catch(e){ /* storage unavailable, continue silently */ }
+  }
+
+  function uid(){ return 't' + Math.random().toString(36).slice(2, 9); }
+
+  /* ---------------- Alarm sound ----------------
+     timer.mp3 must sit next to index.html. It plays in full, and when it
+     finishes it restarts — that repeat is the "tick" — for as long as any
+     timer is in overtime. */
+  var alarmAudio = new Audio('timer.mp3');
+  alarmAudio.preload = 'auto';
+  alarmAudio.loop = true;
+  var alarmPlaying = false;
+  function setAlarm(shouldPlay){
+    if(shouldPlay && !alarmPlaying){
+      alarmPlaying = true;
+      try{
+        alarmAudio.currentTime = 0;
+        alarmAudio.play().catch(function(){ alarmPlaying = false; /* needs a user gesture first */ });
+      }catch(e){ alarmPlaying = false; }
+    } else if(!shouldPlay && alarmPlaying){
+      alarmPlaying = false;
+      alarmAudio.pause();
+      alarmAudio.currentTime = 0;
+    }
+  }
+
+  function fmtTime(totalSeconds){
+    if(totalSeconds <= 0){
+      var abs = Math.abs(totalSeconds);
+      var m = Math.floor(abs/60), s = abs%60;
+      return "-" + String(m).padStart(2,'0') + ":" + String(s).padStart(2,'0');
+    }
+    var mm = Math.floor(totalSeconds/60), ss = totalSeconds%60;
+    return mm + ":" + String(ss).padStart(2,'0');
+  }
+
+  /* ---------------- Entry panel ---------------- */
+
+  var entryEl = document.getElementById('entryPanel');
+
+  function renderEntry(){
+    if(state.entryMode === 'minutes'){
+      renderMinutesEntry();
+    } else if(state.entryMode === 'name'){
+      renderNameEntry();
+    } else if(state.entryMode === 'addtime'){
+      renderAddTimeEntry();
+    }
+  }
+
+  function keypadHTML(confirmDisabled){
+    return ''
+      + '<div class="keypad">'
+      + [1,2,3,4,5,6,7,8,9].map(function(n){
+          return '<button class="key" data-digit="'+n+'">'+n+'</button>';
+        }).join('')
+      + '<button class="key ghost" data-action="clear" aria-label="'+STRINGS.clear+'">&#10005;</button>'
+      + '<button class="key" data-digit="0">0</button>'
+      + '<button class="key confirm" data-action="confirm" aria-label="'+STRINGS.confirm+'"'+(confirmDisabled?' disabled':'')+'>&#10003;</button>'
+      + '</div>';
+  }
+
+  function renderMinutesEntry(){
+    var mins = state.entryDigits ? parseInt(state.entryDigits, 10) : 0;
+    entryEl.innerHTML =
+      '<div class="entry-display">'
+      + '<div class="caption">'+STRINGS.newTimerCaption+'</div>'
+      + '<div class="big num">'+STRINGS.minutesLabel(String(mins).padStart(2,'0'))+'</div>'
+      + '</div>'
+      + keypadHTML(mins <= 0);
+    bindKeypad({
+      digit: function(d){
+        if(state.entryDigits.length < 3){
+          state.entryDigits += d;
+          renderMinutesEntry();
+        }
+      },
+      clear: function(){
+        state.entryDigits = "";
+        renderMinutesEntry();
+      },
+      confirm: function(){
+        var m = state.entryDigits ? parseInt(state.entryDigits,10) : 0;
+        if(m > 0){
+          state.pendingMinutes = m;
+          state.entryDigits = "";
+          state.entryMode = 'name';
+          renderEntry();
+        }
+      }
+    });
+  }
+
+  function renderNameEntry(){
+    entryEl.innerHTML =
+      '<div class="entry-name-prompt">'+STRINGS.namePrompt(STRINGS.minutesLabel(state.pendingMinutes))+'</div>'
+      + '<input class="name-input" id="nameInput" type="text" placeholder="'+STRINGS.namePlaceholder+'" maxlength="24" autocomplete="off">'
+      + '<div class="entry-actions">'
+      + '<button class="pill-btn" data-action="cancel-name" aria-label="'+STRINGS.cancel+'">&#10005;</button>'
+      + '<button class="pill-btn primary" data-action="confirm-name" aria-label="'+STRINGS.confirm+'">&#10003;</button>'
+      + '</div>';
+
+    var input = document.getElementById('nameInput');
+    input.focus();
+    input.addEventListener('keydown', function(e){
+      if(e.key === 'Enter') confirmName();
+    });
+    entryEl.querySelector('[data-action="cancel-name"]').addEventListener('click', function(){
+      state.entryMode = 'minutes';
+      state.entryDigits = "";
+      renderEntry();
+    });
+    entryEl.querySelector('[data-action="confirm-name"]').addEventListener('click', confirmName);
+
+    function confirmName(){
+      var name = input.value.trim() || STRINGS.defaultTimerName(state.timers.length + 1);
+      state.timers.push({ id: uid(), name: name, endsAt: Date.now() + state.pendingMinutes*60*1000, alerted: false });
+      saveState();
+      state.entryMode = 'minutes';
+      state.pendingMinutes = 0;
+      renderEntry();
+      renderList();
+    }
+  }
+
+  function renderAddTimeEntry(){
+    var target = state.timers.find(function(t){ return t.id === state.addTimeTargetId; });
+    if(!target){
+      state.entryMode = 'minutes';
+      renderEntry();
+      return;
+    }
+    var mins = state.entryDigits ? parseInt(state.entryDigits, 10) : 0;
+
+    entryEl.innerHTML =
+      '<div class="entry-display">'
+      + '<div class="caption">'+STRINGS.addTimeTo(escapeHtml(target.name))+'</div>'
+      + '<div class="big num">'+STRINGS.minutesLabel(String(mins).padStart(2,'0'))+'</div>'
+      + '</div>'
+      + keypadHTML(mins <= 0);
+    bindKeypad({
+      digit: function(d){
+        if(state.entryDigits.length < 3){
+          state.entryDigits += d;
+          renderAddTimeEntry();
+        }
+      },
+      clear: function(){
+        state.entryDigits = "";
+        state.addTimeTargetId = null;
+        state.entryMode = 'minutes';
+        renderEntry();
+      },
+      confirm: function(){
+        if(mins > 0){
+          var seconds = mins * 60;
+          // A timer already going off restarts clean from the added amount,
+          // rather than stacking on top of the overtime it's already run.
+          if(getRemaining(target) <= 0){
+            target.endsAt = Date.now() + seconds*1000;
+            target.alerted = false; // let it alert again if it goes negative once more
+          } else {
+            target.endsAt += seconds*1000;
+          }
+          saveState();
+          setAlarm(state.timers.some(function(t){ return getRemaining(t) <= 0; }));
+        }
+        state.entryDigits = "";
+        state.addTimeTargetId = null;
+        state.entryMode = 'minutes';
+        renderEntry();
+        renderList();
+        renderFocus();
+      }
+    });
+  }
+
+  function bindKeypad(handlers){
+    entryEl.querySelectorAll('[data-digit]').forEach(function(btn){
+      btn.addEventListener('click', function(){ handlers.digit(btn.getAttribute('data-digit')); });
+    });
+    var clearBtn = entryEl.querySelector('[data-action="clear"]');
+    if(clearBtn) clearBtn.addEventListener('click', handlers.clear);
+    var confirmBtn = entryEl.querySelector('[data-action="confirm"]');
+    if(confirmBtn) confirmBtn.addEventListener('click', function(){
+      if(!confirmBtn.disabled) handlers.confirm();
+    });
+  }
+
+  function escapeHtml(str){
+    var div = document.createElement('div');
+    div.textContent = str;
+    // textContent→innerHTML only escapes & < >; it leaves quote characters
+    // alone (they're only special inside an attribute, not inside text).
+    // Every call site below drops this into an attribute (aria-label), so
+    // quotes must be escaped too or a name containing one breaks out of it.
+    return div.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  /* ---------------- List panel ---------------- */
+
+  var listEl = document.getElementById('listPanel');
+
+  function renderList(){
+    if(state.timers.length === 0){
+      listEl.innerHTML = '<div class="list-empty">'+STRINGS.emptyList+'</div>';
+      return;
+    }
+    var sorted = state.timers.slice().sort(function(a, b){ return getRemaining(a) - getRemaining(b); });
+    listEl.innerHTML = sorted.map(function(t){
+      var remaining = getRemaining(t);
+      var over = remaining <= 0;
+      return ''
+        + '<div class="timer-card'+(over?' overtime':'')+'" data-id="'+t.id+'" tabindex="0" role="button" aria-label="'+escapeHtml(t.name)+', '+fmtTime(remaining)+'">'
+        + '<div class="info">'
+        + '<div class="time num">'+fmtTime(remaining)+'</div>'
+        + '<div class="name">'+escapeHtml(t.name)+'</div>'
+        + '</div>'
+        + '<button class="icon-btn check" data-action="done" data-id="'+t.id+'" aria-label="'+STRINGS.markDone(escapeHtml(t.name))+'">&#10003;</button>'
+        + '<button class="icon-btn plus" data-action="add" data-id="'+t.id+'" aria-label="'+STRINGS.addTimeTo(escapeHtml(t.name))+'">'+PLUS_ICON+'</button>'
+        + '</div>';
+    }).join('');
+
+    listEl.querySelectorAll('.timer-card').forEach(function(card){
+      card.addEventListener('click', function(e){
+        if(e.target.closest('[data-action]')) return;
+        toggleFocus(card.getAttribute('data-id'));
+      });
+      card.addEventListener('keydown', function(e){
+        if(e.target !== card) return; // let the check/plus buttons handle their own keys
+        if(e.key === 'Enter' || e.key === ' '){
+          e.preventDefault();
+          toggleFocus(card.getAttribute('data-id'));
+        }
+      });
+    });
+    listEl.querySelectorAll('[data-action="done"]').forEach(function(btn){
+      btn.addEventListener('click', function(){ markDone(btn.getAttribute('data-id')); });
+    });
+    listEl.querySelectorAll('[data-action="add"]').forEach(function(btn){
+      btn.addEventListener('click', function(){ startAddTime(btn.getAttribute('data-id')); });
+    });
+  }
+
+  function markDone(id){
+    state.timers = state.timers.filter(function(t){ return t.id !== id; });
+    state.focusedIds = state.focusedIds.filter(function(fid){ return fid !== id; });
+    saveState();
+    setAlarm(state.timers.some(function(t){ return getRemaining(t) <= 0; }));
+    renderList();
+    renderFocus();
+  }
+
+  function startAddTime(id){
+    state.focusedIds = [];
+    state.addTimeTargetId = id;
+    state.entryMode = 'addtime';
+    state.entryDigits = "";
+    renderEntry();
+    renderFocus();
+  }
+
+  /* ---------------- Focus overlay ---------------- */
+
+  var focusOverlay = document.getElementById('focusOverlay');
+  var focusPanes = document.getElementById('focusPanes');
+
+  function toggleFocus(id){
+    var idx = state.focusedIds.indexOf(id);
+    if(idx > -1){
+      state.focusedIds.splice(idx, 1);
+    } else {
+      state.focusedIds.push(id);
+    }
+    renderFocus();
+  }
+
+  function renderFocus(){
+    var active = state.focusedIds
+      .map(function(id){ return state.timers.find(function(t){ return t.id === id; }); })
+      .filter(Boolean);
+
+    if(active.length === 0){
+      focusOverlay.hidden = true;
+      focusPanes.innerHTML = '';
+      return;
+    }
+    focusOverlay.hidden = false;
+    focusPanes.innerHTML = active.map(function(t){
+      var remaining = getRemaining(t);
+      var over = remaining <= 0;
+      return ''
+        + '<div class="focus-pane'+(over?' overtime':'')+'">'
+        + '<div class="focus-time num">'+fmtTime(remaining)+'</div>'
+        + '<div class="focus-name">'+escapeHtml(t.name)+'</div>'
+        + '<div class="focus-actions">'
+        + '<button class="icon-btn check" data-action="done" data-id="'+t.id+'" aria-label="'+STRINGS.markDone(escapeHtml(t.name))+'">&#10003;</button>'
+        + '<button class="icon-btn plus" data-action="add" data-id="'+t.id+'" aria-label="'+STRINGS.addTimeTo(escapeHtml(t.name))+'">'+PLUS_ICON+'</button>'
+        + '</div>'
+        + '</div>';
+    }).join('');
+
+    focusPanes.querySelectorAll('[data-action="done"]').forEach(function(btn){
+      btn.addEventListener('click', function(){ markDone(btn.getAttribute('data-id')); });
+    });
+    focusPanes.querySelectorAll('[data-action="add"]').forEach(function(btn){
+      btn.addEventListener('click', function(){ startAddTime(btn.getAttribute('data-id')); });
+    });
+  }
+
+  document.getElementById('focusBack').setAttribute('aria-label', STRINGS.backToList);
+  document.getElementById('focusBack').addEventListener('click', function(){
+    state.focusedIds = [];
+    renderFocus();
+  });
+
+  /* ---------------- Ticking ----------------
+     Nothing here decrements a counter — every tick just recomputes each
+     timer's remaining time from its stored deadline (endsAt) against the
+     current clock. That's what makes refresh, backgrounding, and closing
+     the tab safe: whenever this next runs, "remaining" is correct again
+     regardless of how much wall-clock time actually passed in between. */
+
+  function tick(){
+    if(state.timers.length === 0){ renderList(); renderFocus(); return; }
+    var justWentOff = [];
+    state.timers.forEach(function(t){
+      if(getRemaining(t) <= 0 && !t.alerted){
+        t.alerted = true;
+        justWentOff.push(t.id);
+      }
+    });
+    // A timer that just hit zero jumps to fullscreen automatically.
+    justWentOff.forEach(function(id){
+      if(state.focusedIds.indexOf(id) === -1) state.focusedIds.push(id);
+    });
+    var anyOvertime = state.timers.some(function(t){ return getRemaining(t) <= 0; });
+    setAlarm(anyOvertime);
+    saveState();
+    renderList();
+    renderFocus();
+  }
+
+  setInterval(tick, 1000);
+  // A backgrounded tab can have its interval throttled or paused; catch up
+  // the instant it's visible again instead of waiting for the next tick.
+  document.addEventListener('visibilitychange', function(){
+    if(!document.hidden) tick();
+  });
+
+  /* ---------------- Init ---------------- */
+
+  document.getElementById('appTitle').textContent = STRINGS.appTitle;
+  document.title = STRINGS.appTitle;
+
+  loadState();
+  renderEntry();
+  tick(); // recompute immediately — catches timers that expired while closed
+
+})();
+</script>
+</body>
+</html>

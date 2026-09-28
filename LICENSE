@@ -19,3 +19,11 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+Third-party assets
+
+The code in this repo is MIT-licensed. The following files are not covered by that licence:
+
+- `Inter.ttf`: [Inter](https://rsms.me/inter/), SIL Open Font License 1.1 (see `OFL-Inter.txt`)
+- `SpaceGrotesk.ttf`: [Space Grotesk](https://fonts.google.com/specimen/Space+Grotesk), SIL Open Font License 1.1 (see `OFL-SpaceGrotesk.txt`)
+- `timer.mp3`: ["Pleasing Bell Sound Effect" by Spring Spring, CC0](https://opengameart.org/content/pleasing-bell-sound-effect)
