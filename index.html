@@ -25,12 +25,32 @@
     backToList: "Back to list",
     markDone: function(name){ return "Mark " + name + " as done"; },
     addTimeTo: function(name){ return "Add time to " + name; },
-    emptyList: "No timers yet — set one on the left."
+    emptyList: "No timers yet — set one on the left.",
+    // --- Shown only when the person has to do something ---
+    timeUp: function(name){ return name + " — time's up"; },
+    titleAlert: "\u23F0 Time's up",
+    audioOff: "The alarm sound is off. Tap here to turn it back on.",
+    audioOffBtn: "Turn on",
+    installAndroid: "Add this app to your device so the alarm keeps working when the screen is off.",
+    installAndroidBtn: "Add",
+    installIos: function(shareIcon){ return "To keep the alarm working when the screen is off: tap " + shareIcon + " <strong>Share</strong>, then <strong>Add to Home Screen</strong>, then open Segment Timer from your Home Screen."; },
+    installIosBtn: "Got it",
+    notifyText: "Allow notifications so you also get a message when time is up.",
+    notifyBtn: "Allow",
+    notNow: "Not now"
   };
 </script>
 
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Segment Timer</title>
+<meta name="theme-color" content="#111214">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Segment Timer">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
 <style>
   /* ===================================================================
      FONTS: self-hosted. Put Inter.ttf and SpaceGrotesk.ttf (variable
@@ -56,6 +76,7 @@
        --paper   text, and the fill of neutral buttons (light)
        --accent  "go" actions: confirm and add-time (used sparingly)
        --alert   anything that's over time
+       etc
      ===================================================================*/
   :root{
     --ink:#111214;
@@ -323,6 +344,33 @@
     font-size:clamp(0.9rem, 6cqi, 1.4rem);
   }
 
+  /* ---------- Help notice (only appears when the person must act) ---------- */
+  .notice{
+    position:fixed;
+    left:50%; bottom:16px;
+    transform:translateX(-50%);
+    width:min(560px, calc(100% - 24px));
+    z-index:60;
+    display:flex; flex-wrap:wrap; align-items:center; gap:10px 12px;
+    background:var(--paper); color:var(--ink);
+    border-radius:16px;
+    padding:14px 16px;
+    box-shadow:0 8px 30px rgba(0,0,0,0.5);
+    font-size:1rem; line-height:1.4;
+  }
+  .notice[hidden]{display:none;}
+  .notice-text{flex:1 1 220px;}
+  .notice-text svg{vertical-align:-3px;}
+  .notice-actions{display:flex; gap:8px; margin-left:auto;}
+  .notice button{
+    border:none; border-radius:999px;
+    padding:11px 18px;
+    font-size:0.95rem; font-weight:600;
+    cursor:pointer;
+    background:var(--ink); color:var(--paper);
+  }
+  .notice button.quiet{background:transparent; color:var(--ink); opacity:0.7;}
+
   .back-btn{
     position:absolute;
     top:20px; left:20px;
@@ -351,6 +399,8 @@
   <!-- RIGHT LIST PANEL -->
   <div class="list-panel" id="listPanel"></div>
 </div>
+
+<div class="notice" id="notice" hidden></div>
 
 <!-- FOCUS OVERLAY -->
 <div class="focus-overlay" id="focusOverlay" hidden>
@@ -412,10 +462,11 @@
 
   function uid(){ return 't' + Math.random().toString(36).slice(2, 9); }
 
-  /* ---------------- Alarm sound ----------------
+  /* ---------------- Alarm sound (simple fallback) ----------------
      timer.mp3 must sit next to index.html. It plays in full, and when it
      finishes it restarts — that repeat is the "tick" — for as long as any
-     timer is in overtime. */
+     timer is in overtime. This is the fallback used when Web Audio isn't
+     available; see "Staying awake and ringing in the background" below. */
   var alarmAudio = new Audio('timer.mp3');
   alarmAudio.preload = 'auto';
   alarmAudio.loop = true;
@@ -433,6 +484,301 @@
       alarmAudio.currentTime = 0;
     }
   }
+
+  /* ---------------- Staying awake and ringing in the background ----------------
+     Three layers, none of which needs a server:
+       1. Screen Wake Lock keeps the screen on while any timer runs (with a
+          tiny hidden looping video as a fallback for browsers that lack it).
+       2. A near-silent tone keeps the page "playing audio" while timers run.
+          Browsers don't freeze or throttle a tab that is playing audio, and
+          phones keep it alive with the screen off.
+       3. The alarm itself is scheduled on the audio hardware clock
+          (source.start(when)) at the moment the next timer ends, so it rings
+          on time even if JavaScript is throttled. If Web Audio isn't usable
+          it falls back to the plain looping <audio> below. */
+
+  var AudioCtx = window.AudioContext || window.webkitAudioContext;
+  var ctx = null, alarmBuffer = null, keepOsc = null, keepGain = null;
+  var alarmSrc = null;          // {src, at}  at = epoch ms when it starts sounding
+  var wakeSentinel = null, wakePending = false, wakeVideo = null;
+  var swReg = null, installPrompt = null, audioOffSince = 0;
+  var NOTICE_KEY = "segment-timers-notices-v1";
+
+  function noop(){}
+  function hasTimers(){ return state.timers.length > 0; }
+  function isIOS(){
+    return /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  }
+  function isStandalone(){
+    return !!navigator.standalone ||
+      (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);
+  }
+  function audioReady(){ return !!ctx && ctx.state === 'running'; }
+
+  function initAudio(){
+    if(!AudioCtx || ctx) return;
+    try{ ctx = new AudioCtx(); }catch(e){ ctx = null; return; }
+    ctx.addEventListener('statechange', function(){ sync(); });
+    // Decoded once so the alarm loops gaplessly. Fails harmlessly on file://,
+    // in which case the plain <audio> fallback is used.
+    fetch('timer.mp3')
+      .then(function(r){ return r.arrayBuffer(); })
+      .then(function(buf){
+        return new Promise(function(res, rej){
+          var p = ctx.decodeAudioData(buf, res, rej);
+          if(p && p.catch) p.catch(rej);
+        });
+      })
+      .then(function(b){ alarmBuffer = b; sync(); })
+      .catch(noop);
+  }
+
+  // Must run inside a tap/click so the browser allows sound and the screen lock.
+  function unlock(){
+    initAudio();
+    if(ctx && ctx.state !== 'running'){
+      try{ var p = ctx.resume(); if(p && p.then) p.then(sync, noop); }catch(e){}
+    }
+    wakeUp();
+    sync();
+  }
+
+  function setKeepAlive(on){
+    if(on && ctx && !keepOsc && audioReady()){
+      keepOsc = ctx.createOscillator();
+      keepGain = ctx.createGain();
+      keepOsc.frequency.value = 25;   // below what tablet speakers can reproduce
+      keepGain.gain.value = 0.003;    // quiet, but above the browser's "silence" cutoff
+      keepOsc.connect(keepGain);
+      keepGain.connect(ctx.destination);
+      keepOsc.start();
+    } else if(!on && keepOsc){
+      try{ keepOsc.stop(); }catch(e){}
+      try{ keepOsc.disconnect(); keepGain.disconnect(); }catch(e){}
+      keepOsc = keepGain = null;
+    }
+  }
+
+  function stopAlarmSrc(){
+    if(!alarmSrc) return;
+    try{ alarmSrc.src.stop(); }catch(e){}
+    try{ alarmSrc.src.disconnect(); }catch(e){}
+    alarmSrc = null;
+  }
+  function startAlarmSrc(atMs){
+    var s = ctx.createBufferSource();
+    s.buffer = alarmBuffer;
+    s.loop = true;
+    s.connect(ctx.destination);
+    s.start(ctx.currentTime + Math.max(0, (atMs - Date.now()) / 1000));
+    alarmSrc = { src: s, at: atMs };
+  }
+  function alarmRinging(){
+    return alarmPlaying || (!!alarmSrc && alarmSrc.at <= Date.now());
+  }
+
+  // One alarm source at a time: scheduled for the earliest deadline, and left
+  // playing as long as anything is in overtime.
+  function syncAlarm(){
+    var over = state.timers.some(function(t){ return getRemaining(t) <= 0; });
+    if(!(audioReady() && alarmBuffer)){
+      stopAlarmSrc();
+      setAlarm(over);
+      return;
+    }
+    setAlarm(false);
+    if(over){
+      if(!alarmSrc || alarmSrc.at > Date.now()){ stopAlarmSrc(); startAlarmSrc(Date.now()); }
+      return;
+    }
+    var next = Infinity;
+    state.timers.forEach(function(t){ if(t.endsAt < next) next = t.endsAt; });
+    if(next === Infinity){ stopAlarmSrc(); return; }
+    var at = next - 500; // matches getRemaining(), which rounds to the nearest second
+    if(alarmSrc && alarmSrc.at === at) return;
+    stopAlarmSrc();
+    startAlarmSrc(at);
+  }
+
+  /* While the app is on screen, share the speaker politely so music keeps
+     playing (iPad Safari: "ambient"). Once the app is in the background or an
+     alarm is ringing, take the full audio session so it survives a locked
+     screen and isn't muted. */
+  function applyAudioSession(){
+    var as = navigator.audioSession;
+    if(!as) return;
+    try{
+      as.type = !hasTimers() ? 'auto' : ((document.hidden || alarmRinging()) ? 'playback' : 'ambient');
+    }catch(e){}
+  }
+
+  /* ---- Screen wake lock ---- */
+  function getWakeVideo(){
+    if(wakeVideo) return wakeVideo;
+    var v = document.createElement('video');
+    v.setAttribute('playsinline', '');
+    v.setAttribute('aria-hidden', 'true');
+    v.muted = true;
+    v.loop = true;
+    v.style.cssText = 'position:fixed;left:0;top:0;width:1px;height:1px;opacity:0.01;pointer-events:none;';
+    v.innerHTML = '<source src="data:video/mp4;base64,AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAMVbW9vdgAAAGxtdmhkAAAAAAAAAAAAAAAAAAAD6AAAA+gAAQAAAQAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAj90cmFrAAAAXHRraGQAAAADAAAAAAAAAAAAAAABAAAAAAAAA+gAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAABAAAAAQAAAAAAAkZWR0cwAAABxlbHN0AAAAAAAAAAEAAAPoAAAAAAABAAAAAAG3bWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAABAAAAAQABVxAAAAAAALWhkbHIAAAAAAAAAAHZpZGUAAAAAAAAAAAAAAABWaWRlb0hhbmRsZXIAAAABYm1pbmYAAAAUdm1oZAAAAAEAAAAAAAAAAAAAACRkaW5mAAAAHGRyZWYAAAAAAAAAAQAAAAx1cmwgAAAAAQAAASJzdGJsAAAAvnN0c2QAAAAAAAAAAQAAAK5hdmMxAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAABAAEABIAAAASAAAAAAAAAABFUxhdmM2MC4zMS4xMDIgbGlieDI2NAAAAAAAAAAAAAAAGP//AAAANGF2Y0MBZAAK/+EAF2dkAAqs2V7ARAAAAwAEAAADAAg8SJZYAQAGaOvjyyLA/fj4AAAAABBwYXNwAAAAAQAAAAEAAAAUYnRydAAAAAAAABYoAAAWKAAAABhzdHRzAAAAAAAAAAEAAAABAABAAAAAABxzdHNjAAAAAAAAAAEAAAABAAAAAQAAAAEAAAAUc3RzegAAAAAAAALFAAAAAQAAABRzdGNvAAAAAAAAAAEAAANFAAAAYnVkdGEAAABabWV0YQAAAAAAAAAhaGRscgAAAAAAAAAAbWRpcmFwcGwAAAAAAAAAAAAAAAAtaWxzdAAAACWpdG9vAAAAHWRhdGEAAAABAAAAAExhdmY2MC4xNi4xMDAAAAAIZnJlZQAAAs1tZGF0AAACrQYF//+p3EXpvebZSLeWLNgg2SPu73gyNjQgLSBjb3JlIDE2NCByMzEwOCAzMWUxOWY5IC0gSC4yNjQvTVBFRy00IEFWQyBjb2RlYyAtIENvcHlsZWZ0IDIwMDMtMjAyMyAtIGh0dHA6Ly93d3cudmlkZW9sYW4ub3JnL3gyNjQuaHRtbCAtIG9wdGlvbnM6IGNhYmFjPTEgcmVmPTMgZGVibG9jaz0xOjA6MCBhbmFseXNlPTB4MzoweDExMyBtZT1oZXggc3VibWU9NyBwc3k9MSBwc3lfcmQ9MS4wMDowLjAwIG1peGVkX3JlZj0xIG1lX3JhbmdlPTE2IGNocm9tYV9tZT0xIHRyZWxsaXM9MSA4eDhkY3Q9MSBjcW09MCBkZWFkem9uZT0yMSwxMSBmYXN0X3Bza2lwPTEgY2hyb21hX3FwX29mZnNldD0tMiB0aHJlYWRzPTEgbG9va2FoZWFkX3RocmVhZHM9MSBzbGljZWRfdGhyZWFkcz0wIG5yPTAgZGVjaW1hdGU9MSBpbnRlcmxhY2VkPTAgYmx1cmF5X2NvbXBhdD0wIGNvbnN0cmFpbmVkX2ludHJhPTAgYmZyYW1lcz0zIGJfcHlyYW1pZD0yIGJfYWRhcHQ9MSBiX2JpYXM9MCBkaXJlY3Q9MSB3ZWlnaHRiPTEgb3Blbl9nb3A9MCB3ZWlnaHRwPTIga2V5aW50PTI1MCBrZXlpbnRfbWluPTEgc2NlbmVjdXQ9NDAgaW50cmFfcmVmcmVzaD0wIHJjX2xvb2thaGVhZD00MCByYz1jcmYgbWJ0cmVlPTEgY3JmPTIzLjAgcWNvbXA9MC42MCBxcG1pbj0wIHFwbWF4PTY5IHFwc3RlcD00IGlwX3JhdGlvPTEuNDAgYXE9MToxLjAwAIAAAAAQZYiEABX//vfJ78Cm69vfgQ==" type="video/mp4">'
+                + '<source src="data:video/webm;base64,GkXfo59ChoEBQveBAULygQRC84EIQoKEd2VibUKHgQJChYECGFOAZwEAAAAAAAHiEU2bdLpNu4tTq4QVSalmU6yBoU27i1OrhBZUrmtTrIHYTbuMU6uEElTDZ1OsggEeTbuMU6uEHFO7a1OsggHM7AEAAAAAAABZAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVSalmsirXsYMPQkBNgI1MYXZmNjAuMTYuMTAwV0GNTGF2ZjYwLjE2LjEwMESJiECPQAAAAAAAFlSua8GuAQAAAAAAADjXgQFzxYhiNOnGe85ehpyBACK1nIN1bmSIgQCGhVZfVlA4g4EBI+ODhDuaygDgibCBELqBEJqBAhJUw2f8c3OgY8CAZ8iaRaOHRU5DT0RFUkSHjUxhdmY2MC4xNi4xMDBzc9ZjwItjxYhiNOnGe85ehmfIoUWjh0VOQ09ERVJEh5RMYXZjNjAuMzEuMTAyIGxpYnZweGfIoUWjiERVUkFUSU9ORIeTMDA6MDA6MDEuMDAwMDAwMDAwAB9DtnWo54EAo6OBAACAEAIAnQEqEAAQAABHCIWFiJmEiAICAAwNYAD+/6tQgBxTu2uRu4+zgQC3iveBAfGCAZ/wgQM=" type="video/webm">';
+    document.body.appendChild(v);
+    wakeVideo = v;
+    return v;
+  }
+  // iPad home-screen apps before iPadOS 18.4 accept a wake lock but ignore it,
+  // so the video runs there as well.
+  function needVideoFallback(){
+    return !('wakeLock' in navigator) || (isIOS() && isStandalone());
+  }
+  function wakeUp(){
+    if(!hasTimers() || document.hidden) return;
+    if('wakeLock' in navigator && !wakeSentinel && !wakePending){
+      wakePending = true;
+      navigator.wakeLock.request('screen').then(function(s){
+        wakePending = false;
+        wakeSentinel = s;
+        s.addEventListener('release', function(){ if(wakeSentinel === s) wakeSentinel = null; });
+        if(!hasTimers()) wakeRelease();
+      }).catch(function(){ wakePending = false; });
+    }
+    if(needVideoFallback()){
+      var p = getWakeVideo().play();
+      if(p && p.catch) p.catch(noop);
+    }
+  }
+  function wakeRelease(){
+    if(wakeSentinel){ try{ wakeSentinel.release(); }catch(e){} wakeSentinel = null; }
+    if(wakeVideo) wakeVideo.pause();
+  }
+
+  /* ---- Everything that depends on "are timers running?" ---- */
+  function sync(){
+    if(hasTimers()){
+      if(ctx && ctx.state !== 'running'){
+        try{ var p = ctx.resume(); if(p && p.catch) p.catch(noop); }catch(e){}
+      }
+      applyAudioSession();
+      wakeUp();
+      setKeepAlive(true);
+    } else {
+      setKeepAlive(false);
+      wakeRelease();
+      applyAudioSession();
+      if(ctx && ctx.state === 'running'){ try{ ctx.suspend(); }catch(e){} }
+    }
+    syncAlarm();
+    renderNotice();
+  }
+
+  function notifyTimeUp(t){
+    try{ if(navigator.vibrate) navigator.vibrate([300, 100, 300, 100, 300]); }catch(e){}
+    if(!document.hidden || !('Notification' in window) || Notification.permission !== 'granted') return;
+    var opts = { tag: t.id, icon: 'icon-192.png', requireInteraction: true, renotify: true, vibrate: [300, 100, 300, 100, 300] };
+    try{
+      if(swReg && swReg.showNotification) swReg.showNotification(STRINGS.timeUp(t.name), opts);
+      else new Notification(STRINGS.timeUp(t.name), opts);
+    }catch(e){}
+  }
+
+  /* ---- Help notice: only shown when the person has to do something ---- */
+  var noticeEl = document.getElementById('notice');
+  var noticeShown = null;
+  var SHARE_ICON = '<svg width="1.1em" height="1.1em" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3v12M8 7l4-4 4 4M6 11H5a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-8a1 1 0 0 0-1-1h-1" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>';
+
+  function dismissed(k){
+    try{
+      var d = JSON.parse(localStorage.getItem(NOTICE_KEY) || '{}');
+      return !!d[k] && Date.now() - d[k] < 3*24*3600*1000;
+    }catch(e){ return false; }
+  }
+  function dismiss(k){
+    try{
+      var d = JSON.parse(localStorage.getItem(NOTICE_KEY) || '{}');
+      d[k] = Date.now();
+      localStorage.setItem(NOTICE_KEY, JSON.stringify(d));
+    }catch(e){}
+    noticeShown = null;
+    renderNotice();
+  }
+
+  function pickNotice(){
+    if(!hasTimers()) return null;
+    if(AudioCtx && !audioReady()){
+      if(!audioOffSince) audioOffSince = Date.now();
+      // Brief grace period: most browsers resume by themselves.
+      if(Date.now() - audioOffSince > 1500){
+        return { id: 'audio', html: STRINGS.audioOff, btn: STRINGS.audioOffBtn,
+                 act: function(){ unlock(); noticeShown = null; renderNotice(); } };
+      }
+    } else {
+      audioOffSince = 0;
+    }
+    if(!isStandalone() && !dismissed('install')){
+      if(installPrompt){
+        return { id: 'install', html: STRINGS.installAndroid, btn: STRINGS.installAndroidBtn, later: true,
+                 act: function(){
+                   var ip = installPrompt; installPrompt = null;
+                   try{ ip.prompt(); }catch(e){}
+                   noticeShown = null; renderNotice();
+                 } };
+      }
+      if(isIOS()){
+        return { id: 'install-ios', html: STRINGS.installIos(SHARE_ICON), btn: STRINGS.installIosBtn,
+                 act: function(){ dismiss('install'); } };
+      }
+    }
+    if('Notification' in window && Notification.permission === 'default' &&
+       (!isIOS() || isStandalone()) && !dismissed('notify')){
+      return { id: 'notify', html: STRINGS.notifyText, btn: STRINGS.notifyBtn, later: true,
+               act: function(){
+                 try{
+                   var r = Notification.requestPermission();
+                   if(r && r.then) r.then(function(){ noticeShown = null; renderNotice(); });
+                 }catch(e){}
+               } };
+    }
+    return null;
+  }
+
+  function renderNotice(){
+    var n = pickNotice();
+    var id = n ? n.id : null;
+    if(id === noticeShown) return;
+    noticeShown = id;
+    if(!n){ noticeEl.hidden = true; noticeEl.innerHTML = ''; return; }
+    noticeEl.innerHTML =
+      '<div class="notice-text">' + n.html + '</div>'
+      + '<div class="notice-actions">'
+      + (n.later ? '<button type="button" class="quiet" data-n="later">' + STRINGS.notNow + '</button>' : '')
+      + '<button type="button" data-n="act">' + n.btn + '</button>'
+      + '</div>';
+    noticeEl.hidden = false;
+    noticeEl.querySelector('[data-n="act"]').addEventListener('click', n.act);
+    var later = noticeEl.querySelector('[data-n="later"]');
+    if(later) later.addEventListener('click', function(){ dismiss(n.id === 'install' ? 'install' : 'notify'); });
+  }
+
+  window.addEventListener('beforeinstallprompt', function(e){
+    e.preventDefault();
+    installPrompt = e;
+    renderNotice();
+  });
+  window.addEventListener('appinstalled', function(){ installPrompt = null; renderNotice(); });
+
+  // Any tap/key while timers run is a chance to (re)start sound and screen lock.
+  ['click', 'touchend', 'keydown'].forEach(function(evt){
+    document.addEventListener(evt, function(){ if(hasTimers()) unlock(); }, true);
+  });
+
+  if('serviceWorker' in navigator && /^https?:$/.test(location.protocol)){
+    navigator.serviceWorker.register('sw.js').then(function(){
+      return navigator.serviceWorker.ready;
+    }).then(function(reg){ swReg = reg; }).catch(noop);
+  }
+  initAudio();
 
   function fmtTime(totalSeconds){
     if(totalSeconds <= 0){
@@ -530,6 +876,7 @@
       state.pendingMinutes = 0;
       renderEntry();
       renderList();
+      unlock(); // this click is the permission slip for sound + screen lock
     }
   }
 
@@ -573,7 +920,7 @@
             target.endsAt += seconds*1000;
           }
           saveState();
-          setAlarm(state.timers.some(function(t){ return getRemaining(t) <= 0; }));
+          sync();
         }
         state.entryDigits = "";
         state.addTimeTargetId = null;
@@ -656,7 +1003,7 @@
     state.timers = state.timers.filter(function(t){ return t.id !== id; });
     state.focusedIds = state.focusedIds.filter(function(fid){ return fid !== id; });
     saveState();
-    setAlarm(state.timers.some(function(t){ return getRemaining(t) <= 0; }));
+    sync();
     renderList();
     renderFocus();
   }
@@ -732,7 +1079,7 @@
      regardless of how much wall-clock time actually passed in between. */
 
   function tick(){
-    if(state.timers.length === 0){ renderList(); renderFocus(); return; }
+    if(state.timers.length === 0){ sync(); renderList(); renderFocus(); return; }
     var justWentOff = [];
     state.timers.forEach(function(t){
       if(getRemaining(t) <= 0 && !t.alerted){
@@ -743,9 +1090,13 @@
     // A timer that just hit zero jumps to fullscreen automatically.
     justWentOff.forEach(function(id){
       if(state.focusedIds.indexOf(id) === -1) state.focusedIds.push(id);
+      var t = state.timers.find(function(x){ return x.id === id; });
+      if(t) notifyTimeUp(t);
     });
     var anyOvertime = state.timers.some(function(t){ return getRemaining(t) <= 0; });
-    setAlarm(anyOvertime);
+    // Flash the tab title while an alarm is going off out of sight.
+    document.title = (anyOvertime && document.hidden && Math.floor(Date.now()/1000) % 2) ? STRINGS.titleAlert : STRINGS.appTitle;
+    sync();
     saveState();
     renderList();
     renderFocus();
@@ -755,6 +1106,7 @@
   // A backgrounded tab can have its interval throttled or paused; catch up
   // the instant it's visible again instead of waiting for the next tick.
   document.addEventListener('visibilitychange', function(){
+    sync();
     if(!document.hidden) tick();
   });
 
